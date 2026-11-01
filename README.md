@@ -5,6 +5,12 @@
 
 ![](./image.png)
 
+```
+cargo build --bin pareto
+sudo ./target/debug/pareto install
+pareto --dict-data <PATH> # See hoverpanel
+```
+
 This project synthesizes 
 
 - https://github.com/ple1n/hoverpanel/
