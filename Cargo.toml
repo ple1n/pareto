@@ -1,0 +1,8 @@
+[package]
+name = "pareto_fs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-openai = "0.42.2"
+helix-db = "=3.0.0"
