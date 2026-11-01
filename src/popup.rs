@@ -1,7 +1,7 @@
 use std::{
     io::{BufRead, BufReader},
     os::unix::net::UnixStream,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     thread,
     time::Duration,
@@ -27,10 +27,10 @@ const WIDTH: i32 = 600;
 const HEIGHT: i32 = 520;
 
 pub fn run(data_dir: &Path) -> Result<()> {
-    let dictionary = Arc::new(Dictionary::open(data_dir)?);
+    let data_dir = data_dir.to_path_buf();
 
     application(
-        move || State::new(Arc::clone(&dictionary)),
+        move || State::new(data_dir.clone()),
         namespace,
         update,
         view,
@@ -52,7 +52,9 @@ pub fn run(data_dir: &Path) -> Result<()> {
 }
 
 struct State {
-    dictionary: Arc<Dictionary>,
+    data_dir: PathBuf,
+    dictionary: Option<Arc<Dictionary>>,
+    dictionary_loading: bool,
     query: String,
     entries: Vec<Entry>,
     error: Option<String>,
@@ -60,9 +62,11 @@ struct State {
 }
 
 impl State {
-    fn new(dictionary: Arc<Dictionary>) -> Self {
+    fn new(data_dir: PathBuf) -> Self {
         Self {
-            dictionary,
+            data_dir,
+            dictionary: None,
+            dictionary_loading: false,
             query: String::new(),
             entries: Vec::new(),
             error: None,
@@ -76,10 +80,20 @@ impl State {
 enum Message {
     Exit,
     QueryChanged(String),
+    DictionaryOpened(std::result::Result<LoadedDictionary, String>),
     LookupFinished(std::result::Result<Vec<Entry>, String>),
     SelectionRead(Option<String>),
     Toggle,
     IcedEvent(Event),
+}
+
+#[derive(Clone)]
+struct LoadedDictionary(Arc<Dictionary>);
+
+impl std::fmt::Debug for LoadedDictionary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("LoadedDictionary")
+    }
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
@@ -88,6 +102,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::QueryChanged(query) => {
             state.query = query;
             lookup_task(state)
+        }
+        Message::DictionaryOpened(Ok(LoadedDictionary(dictionary))) => {
+            state.dictionary = Some(dictionary);
+            state.dictionary_loading = false;
+            state.error = None;
+            lookup_task(state)
+        }
+        Message::DictionaryOpened(Err(error)) => {
+            state.dictionary_loading = false;
+            state.entries.clear();
+            state.error = Some(error);
+            Task::none()
         }
         Message::LookupFinished(Ok(entries)) => {
             state.entries = entries;
@@ -100,12 +126,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::SelectionRead(selection) => {
-            if let Some(selection) = selection {
-                let selection = selection.trim().to_owned();
-                if !selection.is_empty() && selection.len() < 20 {
-                    state.query = selection;
-                    return lookup_task(state);
-                }
+            if let Some(selection) = selection.as_deref().and_then(usable_selection) {
+                state.query = selection.to_owned();
+                return lookup_task(state);
             }
             Task::none()
         }
@@ -127,14 +150,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Task::done(Message::KeyboardInteractivityChange(keyboard)),
                 Task::done(Message::SetInputRegion(input_region(visible))),
             ];
-            let mut tasks = tasks;
-            tasks.push(iced::clipboard::read_primary().map(Message::SelectionRead));
             Task::batch(tasks)
         }
-        Message::IcedEvent(Event::Window(iced::window::Event::Opened { .. })) => Task::batch([
-            Task::done(Message::SetInputRegion(input_region(true))),
-            iced::clipboard::read_primary().map(Message::SelectionRead),
-        ]),
+        Message::IcedEvent(Event::Window(iced::window::Event::Opened { .. })) => {
+            let region = Task::done(Message::SetInputRegion(input_region(true)));
+            if state.dictionary_loading || state.dictionary.is_some() {
+                return region;
+            }
+
+            state.dictionary_loading = true;
+            Task::batch([region, dictionary_open_task(state.data_dir.clone())])
+        }
         Message::IcedEvent(_) => Task::none(),
         _ => Task::none(),
     }
@@ -147,7 +173,9 @@ fn lookup_task(state: &mut State) -> Task<Message> {
         return Task::none();
     }
 
-    let dictionary = Arc::clone(&state.dictionary);
+    let Some(dictionary) = state.dictionary.as_ref().map(Arc::clone) else {
+        return Task::none();
+    };
     let query = state.query.clone();
     Task::perform(
         async move {
@@ -156,6 +184,28 @@ fn lookup_task(state: &mut State) -> Task<Message> {
                 .map_err(|error| error.to_string())
         },
         Message::LookupFinished,
+    )
+}
+
+fn dictionary_open_task(data_dir: PathBuf) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (sender, receiver) = futures::channel::oneshot::channel();
+            thread::Builder::new()
+                .name("pareto-dictionary-open".into())
+                .spawn(move || {
+                    let result = Dictionary::open(&data_dir)
+                        .map(|dictionary| LoadedDictionary(Arc::new(dictionary)))
+                        .map_err(|error| error.to_string());
+                    let _ = sender.send(result);
+                })
+                .map_err(|error| error.to_string())?;
+
+            receiver
+                .await
+                .map_err(|_| "dictionary loader stopped before returning".to_owned())?
+        },
+        Message::DictionaryOpened,
     )
 }
 
@@ -175,7 +225,29 @@ fn subscription(_: &State) -> Subscription<Message> {
         event::listen().map(Message::IcedEvent),
         shortcut,
         gesture_events(),
+        selection_events(),
     ])
+}
+
+fn selection_events() -> Subscription<Message> {
+    crate::selection::subscription().map(|selection| Message::SelectionRead(Some(selection)))
+}
+
+fn usable_selection(selection: &str) -> Option<&str> {
+    let selection = selection.trim();
+    (!selection.is_empty() && selection.len() < 20).then_some(selection)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::usable_selection;
+
+    #[test]
+    fn trims_selected_text_and_rejects_empty_or_long_values() {
+        assert_eq!(usable_selection("  word\n"), Some("word"));
+        assert_eq!(usable_selection(" \t "), None);
+        assert_eq!(usable_selection("01234567890123456789"), None);
+    }
 }
 
 fn gesture_events() -> Subscription<Message> {
@@ -260,7 +332,9 @@ fn rounded_corner_inset(y: i32, width: i32, height: i32, radius: i32) -> i32 {
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    let results = if let Some(error) = &state.error {
+    let results = if state.dictionary_loading {
+        column![text("Loading dictionary...").size(14)]
+    } else if let Some(error) = &state.error {
         column![text(error).size(14)]
     } else {
         state.entries.iter().fold(column![], |column, entry| {

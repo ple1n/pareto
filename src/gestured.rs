@@ -44,6 +44,7 @@ pub async fn run() -> Result<()> {
     let mut device_changes = monitor_input_changes()?;
     let mut events = enumerate_events();
     let mut combo = ComboDetector::default();
+    let mut reported_no_clients = false;
     loop {
         if events.is_empty() {
             device_changes
@@ -62,8 +63,15 @@ pub async fn run() -> Result<()> {
                         let EventSummary::Key(_, code, value) = event.destructure() else {
                             continue;
                         };
-                        if combo.process(code, value, Instant::now()) && events_tx.send(()).is_err() {
-                            eprintln!("no gesture clients are connected");
+                        if combo.process(code, value, Instant::now()) {
+                            match events_tx.send(()) {
+                                Ok(_) => reported_no_clients = false,
+                                Err(_) if !reported_no_clients => {
+                                    eprintln!("no gesture clients are connected");
+                                    reported_no_clients = true;
+                                }
+                                Err(_) => {}
+                            }
                         }
                     }
                     Some(Err(error)) => {

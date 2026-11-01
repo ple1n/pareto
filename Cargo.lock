@@ -3252,7 +3252,9 @@ dependencies = [
  "metacomplete",
  "rocksdb",
  "serde",
+ "smithay-client-toolkit 0.21.1",
  "tokio",
+ "wayland-client",
  "yoke 0.7.5",
 ]
 

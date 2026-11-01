@@ -2,6 +2,7 @@ mod dictionary;
 mod gestured;
 mod launcher;
 mod popup;
+mod selection;
 
 use std::path::PathBuf;
 
