@@ -56,6 +56,7 @@ struct State {
     dictionary: Option<Arc<Dictionary>>,
     dictionary_loading: bool,
     query: String,
+    query_input_id: iced::widget::Id,
     entries: Vec<Entry>,
     error: Option<String>,
     visible: bool,
@@ -68,6 +69,7 @@ impl State {
             dictionary: None,
             dictionary_loading: false,
             query: String::new(),
+            query_input_id: iced::widget::Id::unique(),
             entries: Vec::new(),
             error: None,
             visible: true,
@@ -80,6 +82,7 @@ impl State {
 enum Message {
     Exit,
     QueryChanged(String),
+    QueryInputFocusChecked(bool),
     DictionaryOpened(std::result::Result<LoadedDictionary, String>),
     LookupFinished(std::result::Result<Vec<Entry>, String>),
     SelectionRead(Option<String>),
@@ -102,6 +105,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::QueryChanged(query) => {
             state.query = query;
             lookup_task(state)
+        }
+        Message::QueryInputFocusChecked(focused) => {
+            if focused {
+                Task::none()
+            } else {
+                focus_query_input(state)
+            }
         }
         Message::DictionaryOpened(Ok(LoadedDictionary(dictionary))) => {
             state.dictionary = Some(dictionary);
@@ -145,25 +155,40 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 KeyboardInteractivity::None
             };
-            let tasks = vec![
+            let mut tasks = vec![
                 Task::done(Message::LayerChange(layer)),
                 Task::done(Message::KeyboardInteractivityChange(keyboard)),
                 Task::done(Message::SetInputRegion(input_region(visible))),
             ];
+            if visible {
+                tasks.push(focus_query_input(state));
+            }
             Task::batch(tasks)
         }
         Message::IcedEvent(Event::Window(iced::window::Event::Opened { .. })) => {
-            let region = Task::done(Message::SetInputRegion(input_region(true)));
+            let mut tasks = vec![
+                Task::done(Message::SetInputRegion(input_region(true))),
+                focus_query_input(state),
+            ];
             if state.dictionary_loading || state.dictionary.is_some() {
-                return region;
+                return Task::batch(tasks);
             }
 
             state.dictionary_loading = true;
-            Task::batch([region, dictionary_open_task(state.data_dir.clone())])
+            tasks.push(dictionary_open_task(state.data_dir.clone()));
+            Task::batch(tasks)
+        }
+        Message::IcedEvent(Event::Mouse(iced::mouse::Event::ButtonPressed(_))) => {
+            iced::widget::operation::is_focused(state.query_input_id.clone())
+                .map(Message::QueryInputFocusChecked)
         }
         Message::IcedEvent(_) => Task::none(),
         _ => Task::none(),
     }
+}
+
+fn focus_query_input(state: &State) -> Task<Message> {
+    iced::widget::operation::focus(state.query_input_id.clone())
 }
 
 fn lookup_task(state: &mut State) -> Task<Message> {
@@ -365,6 +390,7 @@ fn view(state: &State) -> Element<'_, Message> {
     container(
         column![
             text_input("Select text or type a word", &state.query)
+                .id(state.query_input_id.clone())
                 .on_input(Message::QueryChanged)
                 .padding(12)
                 .size(16)
