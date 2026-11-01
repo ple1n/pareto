@@ -82,7 +82,7 @@ impl State {
 enum Message {
     Exit,
     QueryChanged(String),
-    QueryInputFocusChecked(bool),
+    ClearQuery,
     DictionaryOpened(std::result::Result<LoadedDictionary, String>),
     LookupFinished(std::result::Result<Vec<Entry>, String>),
     SelectionRead(Option<String>),
@@ -106,12 +106,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.query = query;
             lookup_task(state)
         }
-        Message::QueryInputFocusChecked(focused) => {
-            if focused {
-                Task::none()
-            } else {
-                focus_query_input(state)
-            }
+        Message::ClearQuery => {
+            state.query.clear();
+            Task::batch([lookup_task(state), focus_query_input(state)])
         }
         Message::DictionaryOpened(Ok(LoadedDictionary(dictionary))) => {
             state.dictionary = Some(dictionary);
@@ -138,7 +135,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SelectionRead(selection) => {
             if let Some(selection) = selection.as_deref().and_then(usable_selection) {
                 state.query = selection.to_owned();
-                return lookup_task(state);
+                let id = state.query_input_id.clone();
+                return Task::batch([lookup_task(state), iced::widget::operation::select_all(id)]);
             }
             Task::none()
         }
@@ -179,8 +177,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::batch(tasks)
         }
         Message::IcedEvent(Event::Mouse(iced::mouse::Event::ButtonPressed(_))) => {
-            iced::widget::operation::is_focused(state.query_input_id.clone())
-                .map(Message::QueryInputFocusChecked)
+            refocus_query_input_if_needed(state)
         }
         Message::IcedEvent(_) => Task::none(),
         _ => Task::none(),
@@ -188,7 +185,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 }
 
 fn focus_query_input(state: &State) -> Task<Message> {
-    iced::widget::operation::focus(state.query_input_id.clone())
+    let id = state.query_input_id.clone();
+    iced::widget::operation::focus(id.clone()).chain(iced::widget::operation::select_all(id))
+}
+
+fn refocus_query_input_if_needed(state: &State) -> Task<Message> {
+    let id = state.query_input_id.clone();
+    iced::widget::operation::is_focused(id.clone()).then(move |focused| {
+        if focused {
+            Task::none()
+        } else {
+            iced::widget::operation::focus(id.clone())
+                .chain(iced::widget::operation::select_all(id.clone()))
+        }
+    })
 }
 
 fn lookup_task(state: &mut State) -> Task<Message> {
@@ -239,11 +249,14 @@ fn subscription(_: &State) -> Subscription<Message> {
         let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
             return None;
         };
+
         if modifiers.command() && key.as_ref() == keyboard::Key::Character("q") {
-            Some(Message::Exit)
-        } else {
-            None
+            return Some(Message::Exit);
         }
+        if key.as_ref() == keyboard::Key::Named(keyboard::key::Named::Escape) {
+            return Some(Message::ClearQuery);
+        }
+        None
     });
 
     Subscription::batch([
@@ -394,18 +407,11 @@ fn view(state: &State) -> Element<'_, Message> {
                 .on_input(Message::QueryChanged)
                 .padding(12)
                 .size(16)
-                .style(|_, status| {
-                    let border_color =
-                        if matches!(status, iced::widget::text_input::Status::Focused { .. }) {
-                            Color::from_rgba(0.55, 0.74, 1.0, 0.72)
-                        } else {
-                            Color::from_rgba(0.72, 0.82, 1.0, 0.2)
-                        };
-
+                .style(|_, _| {
                     iced::widget::text_input::Style {
                         background: Color::from_rgba(0.08, 0.12, 0.2, 0.3).into(),
                         border: Border {
-                            color: border_color,
+                            color: Color::from_rgba(0.72, 0.82, 1.0, 0.2),
                             width: 1.0,
                             radius: 12.0.into(),
                         },
