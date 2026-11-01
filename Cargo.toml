@@ -2,7 +2,27 @@
 name = "pareto_fs"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "pareto"
+path = "src/main.rs"
 
 [dependencies]
 async-openai = "0.42.2"
 helix-db = "=3.0.0"
+anyhow = "1.0"
+bincode = "1.3"
+clap = { version = "4.5", features = ["derive"] }
+evdev = { version = "0.13.2", features = ["serde", "tokio", "stream-trait"] }
+futures = "0.3"
+iced = { version = "0.14", features = ["thread-pool"] }
+iced_exwlshell = "0.21.2"
+inotify = "0.11"
+libc = "0.2"
+memmap2 = { version = "0.9", features = ["stable_deref_trait"] }
+rocksdb = "0.24"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "io-util"] }
+yoke = { version = "0.7.3", features = ["derive"] }
+metacomplete = { git = "https://github.com/ple1n/strprox", rev = "86bb69e7079f7069a4cc9b89ab616811ad98fe48", default-features = false, features = ["serde"] }
