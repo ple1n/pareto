@@ -21,7 +21,7 @@ use iced_exwlshell::{
     to_layer_message,
 };
 
-use crate::dictionary::{Dictionary, Entry};
+use crate::dictionary::{DefinitionContent, Dictionary, Entry, LocalizedText};
 
 const WIDTH: i32 = 600;
 const HEIGHT: i32 = 520;
@@ -337,20 +337,30 @@ fn view(state: &State) -> Element<'_, Message> {
     } else if let Some(error) = &state.error {
         column![text(error).size(14)]
     } else {
-        state.entries.iter().fold(column![], |column, entry| {
-            column.push(
-                container(
+        group_entries(&state.entries)
+            .into_iter()
+            .fold(column![], |items, group| {
+                let definitions = group
+                    .definitions
+                    .iter()
+                    .fold(column![], |items, definition| {
+                        push_definition(items, definition, true)
+                    })
+                    .width(Fill);
+
+                items.push(
                     column![
-                        text(format!("{} · {}", entry.word, entry.dictionary)).size(17),
-                        text(&entry.definition).size(14),
+                        text(group.word)
+                            .size(22)
+                            .color(Color::from_rgb(0.55, 0.78, 1.0)),
+                        definitions.spacing(7),
                     ]
-                    .spacing(6),
+                    .width(Fill)
+                    .spacing(5),
                 )
-                .padding(12)
-                .width(Fill),
-            )
-        })
+            })
     };
+    let results = results.width(Fill);
 
     container(
         column![
@@ -379,8 +389,9 @@ fn view(state: &State) -> Element<'_, Message> {
                         selection: Color::from_rgb(0.28, 0.48, 0.78),
                     }
                 }),
-            scrollable(results).height(Length::Fill),
+            scrollable(results).width(Fill).height(Length::Fill),
         ]
+        .width(Fill)
         .spacing(14)
         .padding(20),
     )
@@ -397,6 +408,256 @@ fn view(state: &State) -> Element<'_, Message> {
             })
     })
     .into()
+}
+
+struct WordGroup<'a> {
+    word: &'a str,
+    definitions: Vec<&'a DefinitionContent>,
+}
+
+fn group_entries(entries: &[Entry]) -> Vec<WordGroup<'_>> {
+    let mut groups: Vec<WordGroup<'_>> = Vec::new();
+    for entry in entries {
+        if let Some(group) = groups.iter_mut().find(|group| group.word == entry.word) {
+            group.definitions.extend(&entry.definitions);
+        } else {
+            groups.push(WordGroup {
+                word: &entry.word,
+                definitions: entry.definitions.iter().collect(),
+            });
+        }
+    }
+    groups
+}
+
+fn push_definition<'a>(
+    mut items: iced::widget::Column<'a, Message>,
+    definition: &'a DefinitionContent,
+    indented: bool,
+) -> iced::widget::Column<'a, Message> {
+    let fields = definition_fields(definition);
+    let fields: Element<'a, Message> = if indented {
+        container(fields).width(Fill).padding([0.0, 12.0]).into()
+    } else {
+        fields.into()
+    };
+    items = items.push(fields);
+    definition
+        .children
+        .iter()
+        .fold(items, |items, child| push_definition(items, child, true))
+}
+
+fn definition_fields(definition: &DefinitionContent) -> iced::widget::Column<'_, Message> {
+    let mut fields = column![].width(Fill).spacing(5);
+
+    let mut metadata = iced::widget::row![].spacing(9);
+    let mut has_metadata = false;
+    for (value, color) in [
+        (
+            definition.word_type.as_deref(),
+            Color::from_rgb(0.64, 0.78, 1.0),
+        ),
+        (
+            definition.title.as_deref(),
+            Color::from_rgb(0.86, 0.79, 1.0),
+        ),
+        (
+            definition
+                .t1
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()),
+            Color::from_rgb(0.86, 0.79, 1.0),
+        ),
+        (
+            definition
+                .t2
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()),
+            Color::from_rgb(0.86, 0.79, 1.0),
+        ),
+    ] {
+        if let Some(value) = value {
+            metadata = metadata.push(text(value.trim()).size(13).color(color));
+            has_metadata = true;
+        }
+    }
+    if has_metadata {
+        fields = fields.push(metadata);
+    }
+
+    match (definition.cn.as_deref(), definition.en.as_deref()) {
+        (Some(cn), Some(en)) => {
+            fields = fields.push(
+                iced::widget::row![
+                    text(cn)
+                        .width(Fill)
+                        .size(16)
+                        .color(Color::from_rgb(0.8, 0.9, 1.0)),
+                    text(en)
+                        .width(Fill)
+                        .size(14)
+                        .color(Color::from_rgba(0.88, 0.91, 0.97, 0.88)),
+                ]
+                .spacing(12),
+            );
+        }
+        (Some(cn), None) => {
+            fields = fields.push(text(cn).size(16).color(Color::from_rgb(0.8, 0.9, 1.0)));
+        }
+        (None, Some(en)) => {
+            fields = fields.push(
+                text(en)
+                    .size(14)
+                    .color(Color::from_rgba(0.88, 0.91, 0.97, 0.88)),
+            );
+        }
+        (None, None) => {}
+    }
+
+    if let Some(info) = definition
+        .info
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        fields = fields.push(
+            text(info)
+                .size(14)
+                .color(Color::from_rgba(0.82, 0.87, 0.95, 0.9)),
+        );
+    }
+
+    if !definition.pronunciation.is_empty() {
+        fields = fields.push(
+            text(format!(
+                "Pronunciation: {}",
+                definition.pronunciation.join("  ·  ")
+            ))
+            .size(13)
+            .color(Color::from_rgb(0.73, 0.77, 1.0)),
+        );
+    }
+
+    if let Some(section) = localized_section("Examples", &definition.examples) {
+        fields = fields.push(section);
+    }
+    if let Some(section) = localized_section("Tips", &definition.tips) {
+        fields = fields.push(section);
+    }
+
+    for (heading, values) in [
+        ("Etymology", definition.etymology.as_slice()),
+        ("Related", definition.related.as_slice()),
+    ] {
+        if !values.is_empty() {
+            fields = fields.push(
+                text(format!("{heading}: {}", values.join("  ·  ")))
+                    .size(13)
+                    .color(Color::from_rgba(0.72, 0.81, 0.93, 0.9)),
+            );
+        }
+    }
+
+    fields.width(Fill)
+}
+
+fn localized_section<'a>(
+    heading: &'a str,
+    values: &'a [LocalizedText],
+) -> Option<Element<'a, Message>> {
+    if values.is_empty() {
+        return None;
+    }
+
+    let lines = values
+        .iter()
+        .filter_map(localized_line)
+        .fold(column![], |lines, line| lines.push(line))
+        .spacing(3);
+
+    Some(
+        column![
+            text(heading)
+                .size(12)
+                .color(Color::from_rgb(0.58, 0.77, 1.0)),
+            lines,
+        ]
+        .width(Fill)
+        .spacing(2)
+        .into(),
+    )
+}
+
+fn localized_line(value: &LocalizedText) -> Option<Element<'_, Message>> {
+    match (
+        value.cn.as_deref(),
+        value.en.as_deref(),
+        value.text.as_deref(),
+    ) {
+        (Some(cn), Some(en), _) => Some(
+            iced::widget::row![
+                text(cn)
+                    .width(Fill)
+                    .size(13)
+                    .color(Color::from_rgba(0.83, 0.89, 0.97, 0.9)),
+                text(en)
+                    .width(Fill)
+                    .size(13)
+                    .color(Color::from_rgba(0.72, 0.81, 0.92, 0.86)),
+            ]
+            .spacing(10)
+            .into(),
+        ),
+        (Some(cn), None, _) => Some(
+            text(cn)
+                .size(13)
+                .color(Color::from_rgba(0.83, 0.89, 0.97, 0.9))
+                .into(),
+        ),
+        (None, Some(en), _) => Some(
+            text(en)
+                .size(13)
+                .color(Color::from_rgba(0.72, 0.81, 0.92, 0.86))
+                .into(),
+        ),
+        (_, _, Some(text_value)) => Some(
+            text(text_value)
+                .size(13)
+                .color(Color::from_rgba(0.78, 0.85, 0.94, 0.88))
+                .into(),
+        ),
+        (None, None, None) => None,
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::group_entries;
+    use crate::dictionary::Entry;
+
+    #[test]
+    fn groups_definitions_under_one_headword() {
+        let entries = [
+            Entry {
+                word: "bright".into(),
+                definitions: vec![Default::default()],
+            },
+            Entry {
+                word: "bright".into(),
+                definitions: vec![Default::default()],
+            },
+            Entry {
+                word: "brighter".into(),
+                definitions: vec![Default::default()],
+            },
+        ];
+
+        let groups = group_entries(&entries);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].word, "bright");
+        assert_eq!(groups[0].definitions.len(), 2);
+        assert_eq!(groups[1].word, "brighter");
+    }
 }
 
 fn style(_: &State, theme: &Theme) -> iced::theme::Style {

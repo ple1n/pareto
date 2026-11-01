@@ -19,8 +19,31 @@ pub struct Dictionary {
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub word: String,
-    pub dictionary: String,
-    pub definition: String,
+    pub definitions: Vec<DefinitionContent>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DefinitionContent {
+    pub word_type: Option<String>,
+    pub title: Option<String>,
+    pub cn: Option<String>,
+    pub en: Option<String>,
+    pub info: Option<String>,
+    pub t1: Option<String>,
+    pub t2: Option<String>,
+    pub pronunciation: Vec<String>,
+    pub etymology: Vec<String>,
+    pub examples: Vec<LocalizedText>,
+    pub tips: Vec<LocalizedText>,
+    pub related: Vec<String>,
+    pub children: Vec<DefinitionContent>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LocalizedText {
+    pub cn: Option<String>,
+    pub en: Option<String>,
+    pub text: Option<String>,
 }
 
 impl Dictionary {
@@ -130,8 +153,7 @@ impl Dictionary {
             }
             entries.push(Entry {
                 word: word.to_owned(),
-                dictionary: String::from_utf8_lossy(dictionary).into_owned(),
-                definition: definition.summary(),
+                definitions: vec![definition.into_content()],
             });
         }
         Ok(entries)
@@ -166,57 +188,43 @@ struct Definition {
 }
 
 impl Definition {
-    fn summary(&self) -> String {
-        let mut lines = Vec::new();
-        if let Some(word_type) = &self.word_type {
-            lines.push(word_type.clone());
-        }
-        if let Some(title) = &self.title {
-            lines.push(title.clone());
-        }
-        for text in [&self.cn, &self.en, &self.t1, &self.t2, &self.info]
+    fn into_content(self) -> DefinitionContent {
+        let children = self
+            .definitions
+            .or(self.groups)
+            .unwrap_or_default()
             .into_iter()
-            .flatten()
-        {
-            lines.push(text.clone());
+            .map(Definition::into_content)
+            .collect();
+
+        DefinitionContent {
+            word_type: self.word_type,
+            title: self.title,
+            cn: self.cn,
+            en: self.en,
+            info: self.info,
+            t1: self.t1,
+            t2: self.t2,
+            pronunciation: self
+                .pronunciation
+                .map(StructuredText::into_strings)
+                .unwrap_or_default(),
+            etymology: self.etymology.unwrap_or_default(),
+            examples: self
+                .examples
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(StructuredText::<Example>::into_localized_texts)
+                .collect(),
+            tips: self
+                .tip
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(StructuredText::<Tip>::into_localized_texts)
+                .collect(),
+            related: self.related.unwrap_or_default(),
+            children,
         }
-        if let Some(pronunciation) = &self.pronunciation {
-            lines.extend(pronunciation.texts());
-        }
-        if let Some(etymology) = &self.etymology {
-            lines.extend(etymology.iter().cloned());
-        }
-        if let Some(examples) = &self.examples {
-            for example in examples {
-                lines.extend(example.texts());
-            }
-        }
-        if let Some(tips) = &self.tip {
-            for tip in tips {
-                lines.extend(tip.texts());
-            }
-        }
-        if let Some(related) = &self.related {
-            lines.extend(related.iter().map(|word| format!("Related: {word}")));
-        }
-        if let Some(definitions) = &self.definitions {
-            for definition in definitions {
-                let text = definition.summary();
-                if !text.is_empty() {
-                    lines.push(text);
-                }
-            }
-        }
-        if let Some(groups) = &self.groups {
-            for group in groups {
-                let text = group.summary();
-                if !text.is_empty() {
-                    lines.push(text);
-                }
-            }
-        }
-        lines.dedup();
-        lines.join("\n")
     }
 }
 
@@ -229,10 +237,10 @@ enum StructuredText<T> {
 }
 
 impl StructuredText<String> {
-    fn texts(&self) -> Vec<String> {
+    fn into_strings(self) -> Vec<String> {
         match self {
-            Self::Object(text) | Self::Str(text) => vec![text.clone()],
-            Self::Vec(texts) => texts.iter().flatten().cloned().collect(),
+            Self::Object(text) | Self::Str(text) => vec![text],
+            Self::Vec(texts) => texts.into_iter().flatten().collect(),
             Self::None => Vec::new(),
         }
     }
@@ -251,29 +259,50 @@ struct Tip {
 }
 
 impl StructuredText<Example> {
-    fn texts(&self) -> Vec<String> {
+    fn into_localized_texts(self) -> Vec<LocalizedText> {
         match self {
-            Self::Object(example) => paired_text(&example.cn, &example.en),
-            Self::Vec(texts) => texts.iter().flatten().cloned().collect(),
-            Self::Str(text) => vec![text.clone()],
+            Self::Object(example) => vec![LocalizedText {
+                cn: example.cn,
+                en: example.en,
+                text: None,
+            }],
+            Self::Vec(texts) => texts
+                .into_iter()
+                .flatten()
+                .map(LocalizedText::plain)
+                .collect(),
+            Self::Str(text) => vec![LocalizedText::plain(text)],
             Self::None => Vec::new(),
         }
     }
 }
 
 impl StructuredText<Tip> {
-    fn texts(&self) -> Vec<String> {
+    fn into_localized_texts(self) -> Vec<LocalizedText> {
         match self {
-            Self::Object(tip) => paired_text(&tip.cn, &tip.en),
-            Self::Vec(texts) => texts.iter().flatten().cloned().collect(),
-            Self::Str(text) => vec![text.clone()],
+            Self::Object(tip) => vec![LocalizedText {
+                cn: tip.cn,
+                en: tip.en,
+                text: None,
+            }],
+            Self::Vec(texts) => texts
+                .into_iter()
+                .flatten()
+                .map(LocalizedText::plain)
+                .collect(),
+            Self::Str(text) => vec![LocalizedText::plain(text)],
             Self::None => Vec::new(),
         }
     }
 }
 
-fn paired_text(left: &Option<String>, right: &Option<String>) -> Vec<String> {
-    [left, right].into_iter().flatten().cloned().collect()
+impl LocalizedText {
+    fn plain(text: String) -> Self {
+        Self {
+            text: Some(text),
+            ..Self::default()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -302,9 +331,13 @@ mod tests {
     }
 
     #[test]
-    fn summarizes_nested_definition_fields() {
+    fn preserves_definition_fields_and_nested_structure() {
         let definition = Definition {
-            definitions: None,
+            definitions: Some(vec![Definition {
+                word_type: Some("verb".into()),
+                cn: Some("nested".into()),
+                ..empty_definition()
+            }]),
             groups: None,
             etymology: Some(vec!["origin".into()]),
             en: Some("english".into()),
@@ -317,14 +350,52 @@ mod tests {
             cn: Some("translation".into()),
             t1: None,
             t2: None,
-            examples: None,
+            examples: Some(vec![StructuredText::Object(Example {
+                cn: Some("example in Chinese".into()),
+                en: Some("example in English".into()),
+            })]),
             tip: None,
             related: None,
             dict_name: None,
         };
+        let content = definition.into_content();
+        assert_eq!(content.word_type.as_deref(), Some("noun"));
+        assert_eq!(content.cn.as_deref(), Some("translation"));
+        assert_eq!(content.en.as_deref(), Some("english"));
+        assert_eq!(content.pronunciation, ["sound"]);
+        assert_eq!(content.etymology, ["origin"]);
+        assert_eq!(content.examples.len(), 1);
         assert_eq!(
-            definition.summary(),
-            "noun\ntranslation\nenglish\nsound\norigin"
+            content.examples[0].cn.as_deref(),
+            Some("example in Chinese")
         );
+        assert_eq!(
+            content.examples[0].en.as_deref(),
+            Some("example in English")
+        );
+        assert_eq!(content.children.len(), 1);
+        assert_eq!(content.children[0].cn.as_deref(), Some("nested"));
+    }
+
+    fn empty_definition() -> Definition {
+        Definition {
+            definitions: None,
+            groups: None,
+            etymology: None,
+            en: None,
+            pronunciation: None,
+            title: None,
+            info: None,
+            word_type: None,
+            _index: None,
+            word: None,
+            cn: None,
+            t1: None,
+            t2: None,
+            examples: None,
+            tip: None,
+            related: None,
+            dict_name: None,
+        }
     }
 }
